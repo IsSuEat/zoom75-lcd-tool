@@ -1,5 +1,7 @@
 import datetime
 import hid
+import psutil
+import math
 
 VENDOR_ID = 0x1EA7  # 7847
 PRODUCT_IDS = [52947, 52584, 52865]
@@ -46,7 +48,6 @@ def get_devices():
         except:
             print(f"failed to open device: {dev}")
 
-    print(f"opened {len(opened_devices)} devices")
     return opened_devices
 
 
@@ -72,12 +73,30 @@ def set_cpu_temp(dev, temp):
 
 
 def set_gpu_temp(dev, temp):
-    pass
+    data = bytearray(32)
+    data[8] = 0xA5
+    data[9] = 0x38
+    data[10] = 0x00
+    data[11] = 0x03
+    data[12] = 0x00
+    data[13] = 0x00
+    data[14] = temp
+    data[15] = calc_checksum(data)
+
+    data[0] = 0x1C
+    data[5] = 0x08
+
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
+    dev.write(data)
 
 
 def set_time(dev):
     now = datetime.datetime.now()
     data = bytearray(32)
+
     data[8] = 0xA5
     data[9] = 0x3F
     data[10] = 0x00
@@ -106,42 +125,111 @@ def set_time(dev):
     dev.write(data)
 
 
-def send_known_good_data(dev):
+def set_fan_speed(dev, speed):
     data = bytearray(32)
-    data[0] = 0x1C
-    data[5] = 0x0F
-    data[6] = 0x37
-    data[7] = 0xFE
+
     data[8] = 0xA5
-    data[9] = 0x3F
+    data[9] = 0x39
     data[10] = 0x00
-    data[11] = 0x0A
+    data[11] = 0x03
     data[12] = 0x00
-    data[13] = 0x01
-    data[14] = 0x07
-    data[15] = 0xE7
-    data[16] = 0x0A
-    data[17] = 0x02
-    data[18] = 0x17
-    data[19] = 0x14
-    data[20] = 0x19
-    data[21] = 0x01
-    data[22] = 0xD1
-    data[23] = 0x00
-    data[24] = 0x00
-    data[25] = 0x00
-    data[26] = 0x00
-    data[27] = 0x00
-    data[28] = 0x00
-    data[29] = 0x00
-    data[30] = 0x00
-    data[31] = 0x00
+    data[13] = (speed >> 8) & 0xFF
+    data[14] = speed & 0xFF
+    data[15] = calc_checksum(data)
+
+    data[0] = 0x1C
+    data[5] = 0x08
+
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
     dev.write(data)
+
+
+def set_net_speed(dev, speed):
+    data = bytearray(32)
+
+    data[8] = 0xA5
+    data[9] = 0x3D
+    data[10] = 0x00
+    data[11] = 0x05
+    data[12] = 0x00
+    data[13] = (((speed >> 8) >> 8) >> 8) & 0xFF
+    data[14] = ((speed >> 8) >> 8) & 0xFF
+    data[15] = (speed >> 8) & 0xFF
+    data[16] = speed & 0xFF
+    data[17] = calc_checksum(data)
+
+    data[0] = 0x1C
+    data[5] = 0x08
+
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
+    dev.write(data)
+
+
+def set_weather(dev):
+    # TODO: dont know where on the display that should be
+    code = 5
+    weather1 = 13
+    weather2 = 37
+
+    data = bytearray(32)
+
+    data[8] = 0xA5
+    data[9] = 0x3B
+    data[10] = 0x00
+    data[11] = 0x04
+    data[12] = 0x00
+    data[13] = code
+    data[14] = weather1 & 0xFF
+    data[15] = weather2 & 0xFF
+    data[16] = calc_checksum(data)
+
+    data[0] = 0x1C
+    data[5] = 0x09
+
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
+    dev.write(data)
+
+
+def query_sensors():
+    all_sensors = psutil.sensors_temperatures()
+
+    k10temp = all_sensors["k10temp"]
+    tctl = list(filter(lambda x: x.label == "Tctl", k10temp))
+
+    if len(tctl) != 1:
+        raise ValueError("failed to get cpu temp")
+
+    amdgpu = all_sensors["amdgpu"]
+    junction = list(filter(lambda x: x.label == "junction", amdgpu))
+
+    if len(junction) != 1:
+        raise ValueError("failed to get gpu junction temp")
+
+    current_cpu_temp = math.floor(tctl[0].current)
+    current_gpu_temp = math.floor(junction[0].current)
+
+    current_rpm = 0
+    current_netspeed = 0
+
+    return (current_cpu_temp, current_gpu_temp, current_rpm, current_netspeed)
 
 
 if __name__ == "__main__":
     devs = get_devices()
+    cpu_temp, gpu_temp, rpm, netspeed = query_sensors()
 
     for dev in devs:
         set_time(dev)
-        set_cpu_temp(dev, 42)
+        set_cpu_temp(dev, cpu_temp)
+        set_gpu_temp(dev, gpu_temp)
+        set_fan_speed(dev, rpm)
+        set_net_speed(dev, netspeed)
