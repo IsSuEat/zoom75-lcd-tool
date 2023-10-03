@@ -1,10 +1,12 @@
 import datetime
+import time
 import hid
 import psutil
 import math
+import argparse
 
-VENDOR_ID = 0x1EA7  # 7847
-PRODUCT_IDS = [52947, 52584, 52865]
+VENDOR_ID = 0x1EA7
+PRODUCT_ID = 0xCED3
 
 
 def crc16(data: bytearray, offset, length):
@@ -33,20 +35,28 @@ def calc_checksum(data):
 
 def get_devices():
     devices = list(
-        filter(lambda x: x["interface_number"] == 1, hid.enumerate(VENDOR_ID))
+        filter(
+            lambda x: x["interface_number"] == 1, hid.enumerate(VENDOR_ID, PRODUCT_ID)
+        )
     )
+
+    if len(devices) == 0:
+        raise ValueError(
+            f"no device found matching vendor id: {VENDOR_ID} product id: {PRODUCT_ID}"
+        )
 
     opened_devices = []
     for dev in devices:
         dev_path = dev["path"]
         print(f"opening device at path {dev_path}")
+
+        h = hid.device()
         try:
-            h = hid.device()
             h.open_path(dev_path)
             h.set_nonblocking(1)
             opened_devices.append(h)
-        except:
-            print(f"failed to open device: {dev}")
+        except Exception as e:
+            print(f"failed to open device: {dev}: {e}")
 
     return opened_devices
 
@@ -172,7 +182,6 @@ def set_net_speed(dev, speed):
 
 
 def set_weather(dev):
-    # TODO: dont know where on the display that should be
     code = 5
     weather1 = 13
     weather2 = 37
@@ -199,37 +208,103 @@ def set_weather(dev):
     dev.write(data)
 
 
-def query_sensors():
+def query_sensors(cputemp_module, cputemp_label, gputemp_module, gputemp_label):
     all_sensors = psutil.sensors_temperatures()
 
-    k10temp = all_sensors["k10temp"]
-    tctl = list(filter(lambda x: x.label == "Tctl", k10temp))
+    cpu_sensors = all_sensors[cputemp_module]
+    cpu_sensor = list(filter(lambda x: x.label == cputemp_label, cpu_sensors))
 
-    if len(tctl) != 1:
+    if len(cpu_sensor) != 1:
         raise ValueError("failed to get cpu temp")
 
-    amdgpu = all_sensors["amdgpu"]
-    junction = list(filter(lambda x: x.label == "junction", amdgpu))
+    gpu_sensors = all_sensors[gputemp_module]
+    gpu_sensor = list(filter(lambda x: x.label == gputemp_label, gpu_sensors))
 
-    if len(junction) != 1:
-        raise ValueError("failed to get gpu junction temp")
+    if len(gpu_sensor) != 1:
+        raise ValueError("failed to get gpu temp")
 
-    current_cpu_temp = math.floor(tctl[0].current)
-    current_gpu_temp = math.floor(junction[0].current)
+    current_cpu_temp = math.floor(cpu_sensor[0].current)
+    current_gpu_temp = math.floor(gpu_sensor[0].current)
 
+    # TODO
     current_rpm = 0
     current_netspeed = 0
 
     return (current_cpu_temp, current_gpu_temp, current_rpm, current_netspeed)
 
 
-if __name__ == "__main__":
+def background(args):
     devs = get_devices()
-    cpu_temp, gpu_temp, rpm, netspeed = query_sensors()
+    while True:
+        cpu_temp, gpu_temp, rpm, netspeed = query_sensors(
+            args.cputemp_module,
+            args.cputemp_label,
+            args.gputemp_module,
+            args.gputemp_label,
+        )
 
-    for dev in devs:
-        set_time(dev)
-        set_cpu_temp(dev, cpu_temp)
-        set_gpu_temp(dev, gpu_temp)
-        set_fan_speed(dev, rpm)
-        set_net_speed(dev, netspeed)
+        for dev in devs:
+            set_cpu_temp(dev, cpu_temp)
+            set_gpu_temp(dev, gpu_temp)
+            # set_fan_speed(dev, rpm)
+            # set_net_speed(dev, netspeed)
+
+        time.sleep(1)
+
+
+def main():
+    arg_parser = argparse.ArgumentParser(
+        prog="zoom75 LCD tool",
+        description="Set and update information on the zoom75 LCD kit on Linux",
+    )
+
+    sub_parsers = arg_parser.add_subparsers(dest="command", help="Subcommand help")
+
+    keep_alive_parser = sub_parsers.add_parser(
+        "keep-alive",
+        help="Keep the tool running to continuously update temperature readings",
+    )
+    keep_alive_parser.add_argument(
+        "--cputemp-module",
+        help="Name of the module used for cpu temperature, e.g. k10temp",
+    )
+    keep_alive_parser.add_argument(
+        "--cputemp-label",
+        help="Label of the sensor used to read cpu temperature, e.g. Tctl",
+    )
+    keep_alive_parser.add_argument(
+        "--gputemp-module",
+        help="Name of the module used for gpu temperature, e.g. amdgpu",
+    )
+    keep_alive_parser.add_argument(
+        "--gputemp-label",
+        help="Label of the sensor used to read gpu temperature, e.g. junction",
+    )
+
+    oneshot_parser = sub_parsers.add_parser("oneshot", help="Update a single value once")
+    oneshot_parser.add_argument(
+        "-t",
+        "--set-date-time",
+        action="store_true",
+        help="Set time and date to the current date/time",
+    )
+
+    args = arg_parser.parse_args()
+
+    if args.command == "keep-alive":
+        try:
+            background(args)
+        except KeyboardInterrupt:
+            print("exiting")
+            exit(0)
+    elif args.command == "oneshot":
+        devs = get_devices()
+        for dev in devs:
+            if args.set_date_time:
+                set_time(dev)
+    else:
+        arg_parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
