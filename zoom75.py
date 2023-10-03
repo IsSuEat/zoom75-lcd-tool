@@ -1,8 +1,7 @@
 import datetime
 import hid
-import time
 
-VENDOR_ID = 7847
+VENDOR_ID = 0x1EA7  # 7847
 PRODUCT_IDS = [52947, 52584, 52865]
 
 
@@ -14,6 +13,7 @@ def crc16(data: bytearray, offset, length):
         and offset + length > len(data)
     ):
         return 0
+
     crc = 0xFFFF
     for i in range(0, length):
         crc ^= data[offset + i] << 8
@@ -24,60 +24,86 @@ def crc16(data: bytearray, offset, length):
                 crc = crc << 1
     return crc & 0xFFFF
 
+
 def calc_checksum(data):
-    return ((sum(data) & 0xFF) ^ 255) % 255 
+    return ((sum(data) & 0xFF) ^ 255) % 255
 
 
 def get_devices():
-    for device_dict in hid.enumerate(VENDOR_ID):
-        print(device_dict)
+    devices = list(
+        filter(lambda x: x["interface_number"] == 1, hid.enumerate(VENDOR_ID))
+    )
 
     opened_devices = []
-    for id in PRODUCT_IDS:
+    for dev in devices:
+        dev_path = dev["path"]
+        print(f"opening device at path {dev_path}")
         try:
             h = hid.device()
-            # h.open(VENDOR_ID, id)
-            # need to find the correct interface, for me this is 1
-            h.open_path(b"5-2.1:1.1")  
+            h.open_path(dev_path)
+            h.set_nonblocking(1)
             opened_devices.append(h)
-        except Exception as e:
-            print(f"failed to open device: {id}: {e}")
+        except:
+            print(f"failed to open device: {dev}")
 
     print(f"opened {len(opened_devices)} devices")
     return opened_devices
 
 
+def set_cpu_temp(dev, temp):
+    data = bytearray(32)
+    data[8] = 0xA5
+    data[9] = 0x37
+    data[10] = 0x00
+    data[11] = 0x03
+    data[12] = 0x00
+    data[13] = 0x00
+    data[14] = temp
+    data[15] = calc_checksum(data)
+
+    data[0] = 0x1C
+    data[5] = 0x08
+
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
+    dev.write(data)
+
+
+def set_gpu_temp(dev, temp):
+    pass
+
+
 def set_time(dev):
     now = datetime.datetime.now()
-    num_array = bytearray(32)
-    num_array[8] = 0xA5
-    num_array[9] = 0x3F
-    num_array[10] = 0
-    num_array[11] = 0x0A
-    num_array[12] = 0
-    num_array[13] = 0x01
-    num_array[14] = now.year >> 8
-    num_array[15] = now.year & 0xFF
-    num_array[16] = now.month
-    num_array[17] = now.day
-    num_array[18] = now.hour
-    num_array[19] = now.minute
-    num_array[20] = now.second
-    num_array[21] = 1
+    data = bytearray(32)
+    data[8] = 0xA5
+    data[9] = 0x3F
+    data[10] = 0x00
+    data[11] = 0x0A
+    data[12] = 0x00
+    data[13] = 0x01
 
-    checksum = ((sum(num_array) & 0xFF) ^ 255) % 255 
-    num_array[22] = calc_checksum(num_array)
+    data[14] = now.year >> 8
+    data[15] = now.year & 0xFF
+    data[16] = now.month
+    data[17] = now.day
+    data[18] = now.hour
+    data[19] = now.minute
+    data[20] = now.second
+    data[21] = 0x01
 
-    num_array[0] = 28
-    num_array[5] = 15
+    data[22] = calc_checksum(data)
 
-    num = crc16(num_array, 0, len(num_array))
-    num_array[7] = (num >> 8) & 0xFF
-    num_array[6] = num & 0xFF
+    data[0] = 0x1C
+    data[5] = 0x0F
 
-    res = dev.write(num_array)
-    print(f"wrote {res}")
-    
+    crc = crc16(data, 0, len(data))
+    data[7] = (crc >> 8) & 0xFF
+    data[6] = crc & 0xFF
+
+    dev.write(data)
 
 
 def send_known_good_data(dev):
@@ -115,7 +141,7 @@ def send_known_good_data(dev):
 
 if __name__ == "__main__":
     devs = get_devices()
-   
+
     for dev in devs:
-        dev.set_nonblocking(1)
         set_time(dev)
+        set_cpu_temp(dev, 42)
