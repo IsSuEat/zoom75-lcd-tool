@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import datetime
 import time
 import hid
@@ -9,7 +11,7 @@ VENDOR_ID = 0x1EA7
 PRODUCT_ID = 0xCED3
 
 
-def crc16(data: bytearray, offset, length):
+def crc16(data: bytearray, offset: int, length: int) -> int:
     if (
         data is None
         or offset < 0
@@ -21,7 +23,7 @@ def crc16(data: bytearray, offset, length):
     crc = 0xFFFF
     for i in range(0, length):
         crc ^= data[offset + i] << 8
-        for j in range(0, 8):
+        for _ in range(0, 8):
             if (crc & 0x8000) > 0:
                 crc = (crc << 1) ^ 0x1021
             else:
@@ -29,11 +31,11 @@ def crc16(data: bytearray, offset, length):
     return crc & 0xFFFF
 
 
-def calc_checksum(data):
+def calc_checksum(data: bytearray) -> int:
     return ((sum(data) & 0xFF) ^ 255) % 255
 
 
-def get_devices():
+def get_devices() -> list[hid.device]:
     devices = list(
         filter(
             lambda x: x["interface_number"] == 1, hid.enumerate(VENDOR_ID, PRODUCT_ID)
@@ -61,7 +63,7 @@ def get_devices():
     return opened_devices
 
 
-def set_cpu_temp(dev, temp):
+def set_cpu_temp(dev, temp: int):
     data = bytearray(32)
     data[8] = 0xA5
     data[9] = 0x37
@@ -82,7 +84,7 @@ def set_cpu_temp(dev, temp):
     dev.write(data)
 
 
-def set_gpu_temp(dev, temp):
+def set_gpu_temp(dev, temp: int):
     data = bytearray(32)
     data[8] = 0xA5
     data[9] = 0x38
@@ -135,7 +137,7 @@ def set_time(dev):
     dev.write(data)
 
 
-def set_fan_speed(dev, speed):
+def set_fan_speed(dev, speed: int):
     data = bytearray(32)
 
     data[8] = 0xA5
@@ -157,7 +159,7 @@ def set_fan_speed(dev, speed):
     dev.write(data)
 
 
-def set_net_speed(dev, speed):
+def set_net_speed(dev, speed: int):
     data = bytearray(32)
 
     data[8] = 0xA5
@@ -208,17 +210,23 @@ def set_weather(dev):
     dev.write(data)
 
 
-def query_sensors(cputemp_module, cputemp_label, gputemp_module, gputemp_label):
+def query_sensors(
+    cputemp_module: str, cputemp_label: str, gputemp_module: str, gputemp_label: str
+) -> tuple[int, int, int, int]:
     all_sensors = psutil.sensors_temperatures()
 
     cpu_sensors = all_sensors[cputemp_module]
-    cpu_sensor = list(filter(lambda x: x.label == cputemp_label, cpu_sensors))
+    cpu_sensor = list(
+        filter(lambda x: x.label.lower() == cputemp_label.lower(), cpu_sensors)
+    )
 
     if len(cpu_sensor) != 1:
         raise ValueError("failed to get cpu temp")
 
     gpu_sensors = all_sensors[gputemp_module]
-    gpu_sensor = list(filter(lambda x: x.label == gputemp_label, gpu_sensors))
+    gpu_sensor = list(
+        filter(lambda x: x.label.lower() == gputemp_label.lower(), gpu_sensors)
+    )
 
     if len(gpu_sensor) != 1:
         raise ValueError("failed to get gpu temp")
@@ -231,6 +239,15 @@ def query_sensors(cputemp_module, cputemp_label, gputemp_module, gputemp_label):
     current_netspeed = 0
 
     return (current_cpu_temp, current_gpu_temp, current_rpm, current_netspeed)
+
+
+def print_sensor_infos():
+    all_sensors = psutil.sensors_temperatures()
+    for module, sensors in all_sensors.items():
+        print(f"module: {module}:")
+        for s in sensors:
+            print(f"\tlabel: {s.label}: current value: {s.current}")
+        print()
 
 
 def background(args):
@@ -257,6 +274,12 @@ def main():
         prog="zoom75 LCD tool",
         description="Set and update information on the zoom75 LCD kit on Linux",
     )
+    arg_parser.add_argument(
+        "-p",
+        "--print-sensor-infos",
+        action="store_true",
+        help="Print name of the module and label of available temperature sensors",
+    )
 
     sub_parsers = arg_parser.add_subparsers(dest="command", help="Subcommand help")
 
@@ -281,7 +304,9 @@ def main():
         help="Label of the sensor used to read gpu temperature, e.g. junction",
     )
 
-    oneshot_parser = sub_parsers.add_parser("oneshot", help="Update a single value once")
+    oneshot_parser = sub_parsers.add_parser(
+        "oneshot", help="Update a single value once"
+    )
     oneshot_parser.add_argument(
         "-t",
         "--set-date-time",
@@ -290,6 +315,10 @@ def main():
     )
 
     args = arg_parser.parse_args()
+
+    if args.print_sensor_infos:
+        print_sensor_infos()
+        exit(0)
 
     if args.command == "keep-alive":
         try:
